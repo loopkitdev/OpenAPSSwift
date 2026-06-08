@@ -263,12 +263,11 @@ public struct OpenAPSSwift {
             pumpHistory: ph, profile: profile, basalProfile: basal,
             clock: clockParsed, carbHistory: carbsArr, glucoseHistory: glu)
 
-        let r8 = try AutosensGenerator.generate(
+        // One simulation, both ratios (8h cap=96, 24h cap=288) — bit-identical to
+        // two separate generate() calls but the expensive per-point loop runs once.
+        let (r8, r24) = try AutosensGenerator.generateBoth(
             glucose: glu, pumpHistory: ph, basalProfile: basal, profile: profile,
-            carbs: carbsArr, tempTargets: tt, maxDeviations: 96, clock: clockParsed)
-        let r24 = try AutosensGenerator.generate(
-            glucose: glu, pumpHistory: ph, basalProfile: basal, profile: profile,
-            carbs: carbsArr, tempTargets: tt, maxDeviations: 288, clock: clockParsed)
+            carbs: carbsArr, tempTargets: tt, capA: 96, capB: 288, clock: clockParsed)
         let autosens = r8.ratio < r24.ratio ? r8 : r24
         let ratio = NSDecimalNumber(decimal: autosens.ratio).doubleValue
 

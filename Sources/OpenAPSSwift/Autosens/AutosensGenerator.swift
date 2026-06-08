@@ -164,6 +164,78 @@ struct AutosensGenerator {
         )
     }
 
+    /// Runs the (expensive) deviation simulation ONCE and returns the autosens ratio
+    /// for BOTH deviation caps (e.g. 96 = 8h, 288 = 24h). Bit-identical to calling
+    /// `generate(maxDeviations: capA)` and `generate(maxDeviations: capB)` separately:
+    /// the per-point iob/deviation/state computation is shared, and each cap's
+    /// deviation array is maintained with the exact same in-loop append + single
+    /// drop-oldest trim. Halves the autosens cost (the simulation is the bottleneck).
+    static func generateBoth(
+        glucose: [BloodGlucose],
+        pumpHistory: [PumpHistoryEvent],
+        basalProfile: [BasalProfileEntry],
+        profile: Profile,
+        carbs: [CarbsEntry],
+        tempTargets: [TempTarget],
+        capA: Int,
+        capB: Int,
+        clock: Date
+    ) throws -> (a: Autosens, b: Autosens) {
+        guard glucose.count >= 72 else {
+            let na = Autosens(ratio: 1, newisf: nil, error: "not enough glucose data to calculate autosens")
+            return (na, na)
+        }
+        let lastSiteChange = determineLastSiteChange(pumpHistory: pumpHistory, profile: profile, clock: clock)
+        let treatments = try IobHistory.calcTempTreatments(
+            history: pumpHistory.map { $0.computedEvent() },
+            profile: profile, clock: clock, autosens: nil, zeroTempDuration: nil)
+        let bucketedData = bucketGlucose(glucose: glucose, lastSiteChange: lastSiteChange)
+        let meals = findMeals(history: pumpHistory, carbs: carbs, profile: profile, bucketedGlucose: bucketedData)
+
+        var state = SimulationState(meals: meals)
+        var devA: [Decimal] = []
+        var devB: [Decimal] = []
+        for (oldGlucose, (prevGlucose, currGlucose)) in zip(
+            bucketedData, zip(bucketedData.dropFirst(2), bucketedData.dropFirst(3))
+        ) {
+            if oldGlucose.glucose < 40 || prevGlucose.glucose < 40 || currGlucose.glucose < 40 { continue }
+            guard let isfProfile = profile.isfProfile?.toInsulinSensitivities() else { throw AutosensError.missingIsfProfile }
+            let (sensitivity, _) = try Isf.isfLookup(isfDataInput: isfProfile, timestamp: currGlucose.date)
+            guard sensitivity > 0 else { throw AutosensError.isfLookupError }
+            let deltaGlucose = currGlucose.glucose - prevGlucose.glucose
+            var simulationProfile = profile
+            simulationProfile.currentBasal = try Basal.basalLookup(basalProfile, now: currGlucose.date)
+            simulationProfile.temptargetSet = false
+            let iob = try IobCalculation.iobTotal(treatments: treatments, profile: simulationProfile, time: currGlucose.date)
+            let bgi = (-iob.activity * sensitivity * 5 * 100 + 0.5).rounded(scale: 0, roundingMode: .down) / 100
+            var deviation = deltaGlucose - bgi
+            if currGlucose.glucose < 80, deviation > 0 { deviation = 0 }
+            state = try advanceSimulationState(
+                state: state, glucose: currGlucose, profile: simulationProfile,
+                sensitivity: sensitivity, iob: iob.iob, deviation: deviation)
+
+            // identical append set for both caps
+            var appends: [Decimal] = []
+            if state.type == .nonMeal { appends.append(deviation) }
+            if let ttd = tempTargetDeviation(tempTargets: tempTargets, profile: profile, time: currGlucose.date) { appends.append(ttd) }
+            if everyOtherHourOnTheHour(glucoseDate: currGlucose.date) { appends.append(0) }
+            for d in appends { devA.append(d); devB.append(d) }
+            if devA.count > capA { devA = devA.dropFirst().map { $0 } }
+            if devB.count > capB { devB = devB.dropFirst().map { $0 } }
+        }
+        func pad(_ d: [Decimal]) -> [Decimal] {
+            var dv = d
+            if dv.count < 96 {
+                let completeness = Double(dv.count) / 96.0
+                for _ in 0 ..< Int(round((1.0 - completeness) * 18.0)) { dv.append(0) }
+            }
+            return dv
+        }
+        let a = try statisticsOnDeviations(deviations: pad(devA), profile: profile, debugInfoList: [], includeDeviationsForTesting: false)
+        let b = try statisticsOnDeviations(deviations: pad(devB), profile: profile, debugInfoList: [], includeDeviationsForTesting: false)
+        return (a, b)
+    }
+
     /// Calculates deviation adjustment for high temp targets to raise sensitivity
     ///
     /// This function is not private to enable testing, but it shouldn't be used outside of this module
