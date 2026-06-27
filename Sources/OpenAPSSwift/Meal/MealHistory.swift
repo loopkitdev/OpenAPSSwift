@@ -32,8 +32,15 @@ enum MealHistory {
     ) -> [MealInput] {
         let carbInputs = carbHistory.compactMap { entry -> MealInput? in
             guard entry.carbs > 0 else { return nil }
+            // Anchor the carb-absorption window at the MEAL time (`actualDate`),
+            // not the log time (`createdAt`). For carbs entered well after eating
+            // (retroactive entry), `createdAt` lands after the post-meal BG rise,
+            // so oref's deviation detector sees a falling BG and the "zombie-carb"
+            // safety zeroes COB. `actualDate` (when present) captures the rise —
+            // matching Trio's behaviour. Falls back to `createdAt` when absent
+            // (carbs logged at meal time, where the two coincide).
             return MealInput(
-                timestamp: entry.createdAt,
+                timestamp: entry.actualDate ?? entry.createdAt,
                 carbs: entry.carbs,
                 bolus: nil
             )
