@@ -233,7 +233,8 @@ public struct OpenAPSSwift {
         microBolusAllowed: Bool,
         trioCustomOrefVariables: JSON,
         clockDate: Date,
-        clockJSON: JSON
+        clockJSON: JSON,
+        tempTargets: JSON = "[]"
     ) throws -> (determination: String, autosensRatio: Double) {
         // Match the separate-call clock usage exactly: makeProfile/determineBasal
         // used the Date (req.t); meal/autosens/iob used the parsed clock-string.
@@ -245,7 +246,7 @@ public struct OpenAPSSwift {
         let basal       = try JSONBridge.basalProfile(from: basalProfile)
         let isfP        = try JSONBridge.insulinSensitivities(from: isf)
         let cr          = try JSONBridge.carbRatios(from: carbRatio)
-        let tt: [TempTarget] = []
+        let tt          = try JSONBridge.tempTargets(from: tempTargets)
         let mdl         = JSONBridge.model(from: model)
         let ph          = try JSONBridge.pumpHistory(from: pumpHistory)
         let carbsArr    = try JSONBridge.carbs(from: carbs)
@@ -282,6 +283,38 @@ public struct OpenAPSSwift {
                 iobData: iob, mealData: mealData, autosensData: autosens,
                 reservoirData: resv, glucose: glu, microBolusAllowed: microBolusAllowed,
                 trioCustomOrefVariables: trioCustom, currentTime: clockDate)
+            // GOLDEN-MASTER dump: serialize the determine-basal intermediates (oref0
+            // JSON shape) at a target cycle so Trio's determine-basal.js can be run
+            // on the identical inputs via node and compared. Env-gated, harmless.
+            if let gm = ProcessInfo.processInfo.environment["OREF_GM_TIME"],
+               let target = ISO8601DateFormatter().date(from: gm),
+               abs(clockDate.timeIntervalSince(target)) < 150 {
+                let dir = "/tmp/gm"
+                try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+                func d(_ s: String, _ n: String) { try? s.write(toFile: "\(dir)/\(n).json", atomically: true, encoding: .utf8) }
+                d(try JSONBridge.to(profile), "profile")
+                d(try JSONBridge.to(iob), "iob")
+                d(try JSONBridge.to(mealData), "meal")
+                d(try JSONBridge.to(autosens), "autosens")
+                d(try JSONBridge.to(glu), "glucose")
+                d(try JSONBridge.to(curTemp), "currenttemp")
+                d(preferences.rawJSON, "preferences")
+                d(basalProfile.rawJSON, "basalprofile")
+                d(try JSONBridge.to(trioCustom), "trio_custom")
+                d(try JSONBridge.to(rawDet), "our_determination")
+                d("\"\(ISO8601DateFormatter().string(from: clockDate))\"", "clock")
+                // RAW inputs (for generator golden-master: run Trio profile/meal/
+                // autosens/iob on these and compare to our intermediates above).
+                d(pumpHistory.rawJSON, "raw_pumphistory")
+                d(carbs.rawJSON, "raw_carbs")
+                d(pumpSettings.rawJSON, "raw_pumpsettings")
+                d(bgTargets.rawJSON, "raw_bgtargets")
+                d(isf.rawJSON, "raw_isf")
+                d(carbRatio.rawJSON, "raw_carbratio")
+                d(tempTargets.rawJSON, "raw_temptargets")
+                d(model.rawJSON, "raw_model")
+                FileHandle.standardError.write(Data("GM dumped at \(clockDate)\n".utf8))
+            }
             return (try JSONBridge.to(rawDet), ratio)
         } catch let determinationError as DeterminationError {
             let response = try JSONBridge.to(DeterminationErrorResponse(error: determinationError.localizedDescription))
