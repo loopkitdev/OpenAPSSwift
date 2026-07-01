@@ -272,28 +272,8 @@ public struct OpenAPSSwift {
         let autosens = r8.ratio < r24.ratio ? r8 : r24
         let ratio = NSDecimalNumber(decimal: autosens.ratio).doubleValue
 
-        // IOB net-basal uses currentRate = scheduledBasal × autosens.ratio
-        // (oref history.js). For a dynISF user DetermineBasal overrides
-        // autosens.ratio with the dynISF sensitivity ratio (~1.43 for the OREF
-        // user), so computing IOB with the CLASSIC autosens ratio (~1.0) makes
-        // the net-basal ~1.4× less negative → over-reads IOB by ~1U → under-doses.
-        // Keep the IOB consistent with dosing by feeding the dynISF ratio into the
-        // IOB's net-basal. Verified 2026-07-01 against field devicestatus IOB
-        // (netbasalinsulin −3.95 → −6.35, iob 2.23 → 1.47). No-op when dynISF is
-        // off (DynamicISF.calculate returns nil) ⇒ classic autosens as before.
-        var iobAutosens = autosens
-        if let gs = (try? DeterminationGenerator.getGlucoseStatus(glucoseReadings: glu)) ?? nil,
-           let dyn = DynamicISF.calculate(
-               profile: profile, preferences: prefs,
-               currentGlucose: gs.glucose, trioCustomOrefVariables: trioCustom) {
-            iobAutosens = Autosens(
-                ratio: dyn.ratio, newisf: autosens.newisf,
-                deviationsUnsorted: autosens.deviationsUnsorted, timestamp: autosens.timestamp,
-                debugInfo: autosens.debugInfo, error: autosens.error)
-        }
-
         let iob = try IobGenerator.generate(
-            history: ph, profile: profile, clock: clockParsed, autosens: iobAutosens)
+            history: ph, profile: profile, clock: clockParsed, autosens: autosens)
 
         guard let mealData = meal else { throw DeterminationError.missingInputs }
 
