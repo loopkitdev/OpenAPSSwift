@@ -73,10 +73,23 @@ to your service.
 
 ## Provenance
 
-Extracted in June 2026 from `nightscout/Trio` commit on the
-`feat/dev-oref-swift` branch. Original source paths were
-`Trio/Sources/APS/OpenAPSSwift/` plus the model + helper files it
-transitively referenced from `Trio/Sources/{Models,Helpers}/`.
+Synced 2026-10-24 to **Trio v1.0.2**: the algorithm file set of Trio's own `AlgorithmPackage`
+(`Trio/Sources/APS/OpenAPSSwift/`, `APS/Extensions/DecimalExtensions.swift`, and the models and
+helpers it lists), taken from branch `enable-oref-as-non-testing-package` @ `95cb8acf1`, whose
+algorithm files equal `main` @ `0b29cd534` (release v1.0.2) up to access control. Plus
+`Helpers/TempTargetCalculations.swift`, which the app layer uses when it builds the profile.
+
+`OpenAPSSwift.swift` is this package's own JSON façade. Trio 1.0's app calls the generators
+natively and does some algorithm-relevant work around them (temp-target half-basal adjustment,
+pump rate table, duplicate suspend/resume removal, the 8 h/24 h autosens choice, the
+insufficient-TDD guard on dynamic ISF); the façade reproduces it, see the doc comment there.
+
+`Tests/OpenAPSSwiftTests` is Trio's own algorithm test suite at the same commit, run against this
+package (`swift test`; the parity goldens need `TZ=Europe/Berlin`). All 226 tests and the 14
+golden scenarios pass.
+
+The June 2026 extraction from `feat/dev-oref-swift` (Trio ~0.7-era behaviour, e.g. dynamic ISF
+off at a high target with `high_temptarget_raises_sensitivity`) is tagged `oref-2026-06`.
 
 No algorithm changes from the upstream Trio extraction — this package
 is a *packaging change only*. Bug fixes and behavior changes that show

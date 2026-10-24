@@ -1,11 +1,11 @@
 import Foundation
 
-@dynamicMemberLookup public protocol JSON: Codable {
+@dynamicMemberLookup protocol JSON: Codable {
     var rawJSON: String { get }
     init?(from: String)
 }
 
-public extension JSON {
+extension JSON {
     var rawJSON: RawJSON {
         String(data: try! JSONCoding.encoder.encode(self), encoding: .utf8)!
     }
@@ -39,8 +39,8 @@ public extension JSON {
 }
 
 extension String: JSON {
-    public var rawJSON: String { self }
-    public init?(from: String) { self = from }
+    var rawJSON: String { self }
+    init?(from: String) { self = from }
 }
 
 extension Double: JSON {}
@@ -52,7 +52,7 @@ extension Bool: JSON {}
 extension Decimal: JSON {}
 
 extension Date: JSON {
-    public init?(from: String) {
+    init?(from: String) {
         let dateFormatter = Formatter.iso8601withFractionalSeconds
         let string = from.replacingOccurrences(of: "\"", with: "")
         if let date = dateFormatter.date(from: string) {
@@ -63,9 +63,9 @@ extension Date: JSON {
     }
 }
 
-public typealias RawJSON = String
+typealias RawJSON = String
 
-public extension RawJSON {
+extension RawJSON {
     static let null = "null"
     static let empty = ""
 }
@@ -73,22 +73,22 @@ public extension RawJSON {
 extension Array: JSON where Element: JSON {}
 extension Dictionary: JSON where Key: JSON, Value: JSON {}
 
-public extension Dictionary where Key == String {
+extension Dictionary where Key == String {
     var rawJSON: RawJSON? {
         guard let data = try? JSONSerialization.data(withJSONObject: self, options: .prettyPrinted) else { return nil }
         return RawJSON(data: data, encoding: .utf8)
     }
 }
 
-enum JSONCoding {
-    static var encoder: JSONEncoder {
+public enum JSONCoding {
+    public static var encoder: JSONEncoder {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .withoutEscapingSlashes]
         encoder.dateEncodingStrategy = .customISO8601
         return encoder
     }
 
-    static var decoder: JSONDecoder {
+    public static var decoder: JSONDecoder {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .customISO8601
         return decoder

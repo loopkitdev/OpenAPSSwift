@@ -1,17 +1,25 @@
 import Foundation
 
 /// Represents the successful output of a dynamic ISF calculation.
-struct DynamicISFResult {
+public struct DynamicISFResult {
     /// The final sensitivity ratio, after all calculations and clamping.
-    let ratio: Decimal
+    public let ratio: Decimal
     /// The ratio of 24h TDD to the 14-day average TDD, clamped by autosens limits.
-    let tddRatio: Decimal
+    public let tddRatio: Decimal
     /// The calculated insulin factor (120 - peak time), used in the logarithmic formula.
-    let insulinFactor: Decimal
+    public let insulinFactor: Decimal
     /// The ratio before clamping was applied.
-    let uncappedRatio: Decimal
+    public let uncappedRatio: Decimal
     /// The limit value if the ratio was clamped, nil otherwise.
-    let limitValue: Decimal?
+    public let limitValue: Decimal?
+
+    public init(ratio: Decimal, tddRatio: Decimal, insulinFactor: Decimal, uncappedRatio: Decimal, limitValue: Decimal?) {
+        self.ratio = ratio
+        self.tddRatio = tddRatio
+        self.insulinFactor = insulinFactor
+        self.uncappedRatio = uncappedRatio
+        self.limitValue = limitValue
+    }
 }
 
 enum DynamicISF {
@@ -79,16 +87,21 @@ enum DynamicISF {
 
         var newRatio: Decimal
         if preferences.sigmoid {
-            let autosensInterval = maxLimit - minLimit
+            // BUG: A second fudge factor, mirroring the maxMinusOne
+            // copied from JS. This one prevents -Inf from log10 when
+            // minLimit == 1, which causes a crash loop
+            var sigmoidMin = minLimit
+            if minLimit == 1 { sigmoidMin = minLimit - 0.01 }
+            let autosensInterval = maxLimit - sigmoidMin
             let bgDev = (bg - profileTarget) * 0.0555
             let tddFactor = clampedTddRatio
             var maxMinusOne = maxLimit - 1
             // BUG: Note this fudge factor is to avoid a divide by zero but produces
             // unintuitive (and incorrect) results. See the unit tests for an example
             if maxLimit == 1 { maxMinusOne = maxLimit + 0.01 - 1 }
-            let fixOffset = Decimal.log10(1 / maxMinusOne - minLimit / maxMinusOne) / Decimal(Foundation.log10(M_E))
+            let fixOffset = Decimal.log10(1 / maxMinusOne - sigmoidMin / maxMinusOne) / Decimal(Foundation.log10(M_E))
             let exponent = bgDev * preferences.adjustmentFactorSigmoid * tddFactor + fixOffset
-            newRatio = autosensInterval / (1 + Decimal.exp(-exponent)) + minLimit
+            newRatio = autosensInterval / (1 + Decimal.exp(-exponent)) + sigmoidMin
         } else {
             newRatio = sensitivity * preferences.adjustmentFactor * tdd * (Decimal.log((bg / insulinFactor) + 1) / 1800)
         }
@@ -143,7 +156,7 @@ enum DynamicIsfState {
 }
 
 extension Preferences {
-    func dynamicIsfState(profile: Profile, trioCustomOrefVariables: TrioCustomOrefVariables) -> DynamicIsfState {
+    func dynamicIsfState(profile: Profile, trioCustomOrefVariables _: TrioCustomOrefVariables) -> DynamicIsfState {
         guard useNewFormula else { return .off }
 
         // Turn off when autosens.min = autosens.max
@@ -154,13 +167,6 @@ extension Preferences {
         let minLimit = min(profile.autosensMax, profile.autosensMin)
         let maxLimit = max(profile.autosensMax, profile.autosensMin)
         if maxLimit == minLimit || minLimit > 1 || maxLimit < 1 {
-            return .off
-        }
-
-        // checks for 'exercise mode' like conditions
-        if profile.highTemptargetRaisesSensitivity,
-           let profileTarget = profile.profileTarget(trioCustomOrefVariables: trioCustomOrefVariables), profileTarget >= 118
-        {
             return .off
         }
 

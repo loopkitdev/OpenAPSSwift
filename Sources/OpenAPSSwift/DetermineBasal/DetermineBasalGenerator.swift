@@ -7,12 +7,12 @@ protocol OverrideHandler {
     /// This could also possibly be handled via an extension of our existing `ProfileGenerator` (?)
 }
 
-enum DeterminationGenerator {
+public enum DeterminationGenerator {
     // override data can just be fetched from the DB
     // handling via overrideManager ?
 
     /// Top-level determination generator, callers should use this function
-    static func generate(
+    public static func generate(
         profile: Profile,
         preferences: Preferences,
         currentTemp: TempBasal,
@@ -377,7 +377,7 @@ enum DeterminationGenerator {
             temp: nil,
             bg: currentGlucose,
             reservoir: nil,
-            isf: nil,
+            isf: adjustedSensitivity.jsRounded(),
             timestamp: currentTime,
             tdd: nil,
             current_target: adjustedGlucoseTargets.targetGlucose,
@@ -389,6 +389,7 @@ enum DeterminationGenerator {
             carbRatio: forecastResult.adjustedCarbRatio.jsRounded(scale: 1),
             received: false
         )
+        determination.cobProjection = forecastResult.cobProjection
 
         // MARK: - Core dosing logic
 
@@ -409,6 +410,11 @@ enum DeterminationGenerator {
         determination = lowGlucoseSuspendDetermination
         if shouldSetTempBasalForLowGlucoseSuspend {
             return determination
+        }
+
+        // basal testing acts only on the low handled above; every stage below moves the curve
+        if profile.suspendOnly {
+            return DosingEngine.recommendNoChange(determination: determination)
         }
 
         let (shouldSetTempBasalForSkipNeutralTemp, skipNeutralTempDetermination) = try DosingEngine.skipNeutralTempBasal(
@@ -486,7 +492,7 @@ enum DeterminationGenerator {
         if forecastResult.eventualGlucose >= adjustedGlucoseTargets.maxGlucose {
             determination
                 .reason +=
-                "Eventual BG \(DosingEngine.convertGlucose(profile: profile, glucose: forecastResult.eventualGlucose)) >= \(DosingEngine.convertGlucose(profile: profile, glucose: adjustedGlucoseTargets.maxGlucose)), "
+                "Eventual BG \(forecastResult.eventualGlucose.jsRounded()) >= \(adjustedGlucoseTargets.maxGlucose.jsRounded()), "
         }
 
         let (shouldSetTempBasalForIobGreaterThanMax, iobGreaterThanMaxDetermination) = try DosingEngine.iobGreaterThanMax(

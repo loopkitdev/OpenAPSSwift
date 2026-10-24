@@ -1,6 +1,6 @@
 import Foundation
 
-struct ForecastResult {
+public struct ForecastResult {
     public let iob: [Decimal]
     public let cob: [Decimal]?
     public let uam: [Decimal]?
@@ -14,6 +14,7 @@ struct ForecastResult {
     public let carbImpact: Decimal
     public let remainingCarbImpactPeak: Decimal
     public let adjustedCarbRatio: Decimal
+    public let cobProjection: [Decimal]? // remaining grams per step, display-only
 }
 
 struct ForecastSelectionResult {

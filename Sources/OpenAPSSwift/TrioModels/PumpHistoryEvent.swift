@@ -1,23 +1,27 @@
 import Foundation
 
-struct PumpHistoryEvent: JSON, Equatable, Identifiable {
-    let id: String
-    let type: EventType
-    let timestamp: Date
-    let amount: Decimal?
-    let duration: Int?
-    let durationMin: Int?
-    let rate: Decimal?
-    let temp: TempType?
-    let carbInput: Int?
-    let fatInput: Int?
-    let proteinInput: Int?
-    let note: String?
-    let isSMB: Bool?
-    let isExternal: Bool?
-    let isExternalInsulin: Bool?
+public struct PumpHistoryEvent: JSON, Equatable, Identifiable {
+    public let id: String
+    public let type: EventType
+    public let timestamp: Date
+    public let amount: Decimal?
+    public let duration: Int?
+    public let durationMin: Int?
+    public let rate: Decimal?
+    public let temp: TempType?
+    public let carbInput: Int?
+    public let fatInput: Int?
+    public let proteinInput: Int?
+    public let note: String?
+    public let isSMB: Bool?
+    public let isExternal: Bool?
+    public let isExternalInsulin: Bool?
+    public let isScheduledBasal: Bool?
+    public let deliveredUnits: Decimal?
+    public let programmedAmount: Decimal?
+    public let insulinType: String?
 
-    init(
+    public init(
         id: String,
         type: EventType,
         timestamp: Date,
@@ -32,7 +36,11 @@ struct PumpHistoryEvent: JSON, Equatable, Identifiable {
         note: String? = nil,
         isSMB: Bool? = nil,
         isExternal: Bool? = nil,
-        isExternalInsulin: Bool? = nil
+        isExternalInsulin: Bool? = nil,
+        isScheduledBasal: Bool? = nil,
+        deliveredUnits: Decimal? = nil,
+        programmedAmount: Decimal? = nil,
+        insulinType: String? = nil
     ) {
         self.id = id
         self.type = type
@@ -49,10 +57,14 @@ struct PumpHistoryEvent: JSON, Equatable, Identifiable {
         self.isSMB = isSMB
         self.isExternal = isExternal
         self.isExternalInsulin = isExternalInsulin
+        self.isScheduledBasal = isScheduledBasal
+        self.deliveredUnits = deliveredUnits
+        self.programmedAmount = programmedAmount
+        self.insulinType = insulinType
     }
 }
 
-enum EventType: String, JSON {
+public enum EventType: String, JSON {
     case bolus = "Bolus"
     case smb = "SMB"
     case isExternal = "External Insulin"
@@ -77,7 +89,7 @@ enum EventType: String, JSON {
     case note = "Note"
 }
 
-enum TempType: String, JSON {
+public enum TempType: String, JSON {
     case absolute
     case percent
 }
@@ -99,6 +111,9 @@ extension PumpHistoryEvent {
         case isSMB
         case isExternal
         case isExternalInsulin
+        case isScheduledBasal
+        case deliveredUnits
+        case programmedAmount
+        case insulinType
     }
 }
-

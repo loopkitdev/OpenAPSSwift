@@ -1,7 +1,7 @@
 import Foundation
 
-struct BloodGlucose: JSON, Identifiable, Hashable, Codable {
-    enum Direction: String, JSON {
+public struct BloodGlucose: JSON, Identifiable, Hashable, Codable {
+    public enum Direction: String, JSON {
         case tripleUp = "TripleUp"
         case doubleUp = "DoubleUp"
         case singleUp = "SingleUp"
@@ -75,7 +75,7 @@ struct BloodGlucose: JSON, Identifiable, Hashable, Codable {
         case transmitterID
     }
 
-    init(from decoder: Decoder) throws {
+    public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
 
         let legacyId = try container.decodeIfPresent(String.self, forKey: .legacyId)
@@ -120,7 +120,7 @@ struct BloodGlucose: JSON, Identifiable, Hashable, Codable {
         transmitterID = try container.decodeIfPresent(String.self, forKey: .transmitterID)
     }
 
-    init(
+    public init(
         id: String = UUID().uuidString,
         legacyId: String? = nil,
         sgv: Int? = nil,
@@ -155,43 +155,58 @@ struct BloodGlucose: JSON, Identifiable, Hashable, Codable {
     }
 
     let legacyId: String?
-    var id: String
-    var sgv: Int?
-    var mbg: Int?
-    var direction: Direction?
-    let date: Decimal
-    let dateString: Date
-    let unfiltered: Decimal?
-    let filtered: Decimal?
-    let noise: Int?
-    var glucose: Int?
-    var type: String? = nil
-    var activationDate: Date? = nil
-    var sessionStartDate: Date? = nil
-    var transmitterID: String? = nil
-    var isStateValid: Bool { sgv ?? 0 >= 39 && noise ?? 1 != 4 }
+    public var id: String
+    public var sgv: Int?
+    public var mbg: Int?
+    public var direction: Direction?
+    public let date: Decimal
+    public let dateString: Date
+    public let unfiltered: Decimal?
+    public let filtered: Decimal?
+    public let noise: Int?
+    public var glucose: Int?
+    public var type: String? = nil
+    public var activationDate: Date? = nil
+    public var sessionStartDate: Date? = nil
+    public var transmitterID: String? = nil
+    public var isStateValid: Bool { sgv ?? 0 >= 39 && noise ?? 1 != 4 }
 
-    static func == (lhs: BloodGlucose, rhs: BloodGlucose) -> Bool {
+    // TODO: remove this custom Equatable/Hashable. Keying identity on `dateString` is a footgun:
+    // two distinct readings at the same instant collide, and the same reading at different date
+    // precision compares unequal. `id` (the sync identifier) is the natural key. It's currently
+    // safe to leave — nothing live compares `BloodGlucose` via ==/hash (only the unused
+    // `History.Glucose` reaches it) — but it should be removed in its own change.
+    public static func == (lhs: BloodGlucose, rhs: BloodGlucose) -> Bool {
         lhs.dateString == rhs.dateString
     }
 
-    func hash(into hasher: inout Hasher) {
+    public func hash(into hasher: inout Hasher) {
         hasher.combine(dateString)
     }
 }
 
-enum GlucoseUnits: String, JSON, Equatable, CaseIterable, Identifiable {
+public enum GlucoseUnits: String, JSON, Equatable, CaseIterable, Identifiable {
     case mgdL = "mg/dL"
     case mmolL = "mmol/L"
 
     static let exchangeRate: Decimal = 0.0555
 
-    var id: String { rawValue }
+    public var id: String { rawValue }
+}
+
+/// File-local copy of `rounded(_:scale:roundingMode:)` from Helpers/Rounding.swift. Inside the
+/// numeric extensions below an unqualified `rounded` resolves to the instance methods, and
+/// qualifying the call with the module name would tie this file to the app module.
+private func roundGlucose(_ value: Decimal, scale: Int, roundingMode: NSDecimalNumber.RoundingMode) -> Decimal {
+    var result = Decimal()
+    var toRound = value
+    NSDecimalRound(&result, &toRound, scale, roundingMode)
+    return result
 }
 
 extension Int {
     var asMmolL: Decimal {
-        decimalRound(Decimal(self) * GlucoseUnits.exchangeRate, scale: 1, roundingMode: .plain)
+        roundGlucose(Decimal(self) * GlucoseUnits.exchangeRate, scale: 1, roundingMode: .plain)
     }
 
     var formattedAsMmolL: String {
@@ -213,11 +228,11 @@ extension Decimal {
     }
 
     var asMmolL: Decimal {
-        decimalRound(self * GlucoseUnits.exchangeRate, scale: 1, roundingMode: .plain)
+        roundGlucose(self * GlucoseUnits.exchangeRate, scale: 1, roundingMode: .plain)
     }
 
     var asMgdL: Decimal {
-        decimalRound(self / GlucoseUnits.exchangeRate, scale: 0, roundingMode: .plain)
+        roundGlucose(self / GlucoseUnits.exchangeRate, scale: 0, roundingMode: .plain)
     }
 
     var formattedAsMmolL: String {
@@ -239,11 +254,11 @@ extension Double {
     }
 
     var asMmolL: Decimal {
-        decimalRound(Decimal(self) * GlucoseUnits.exchangeRate, scale: 1, roundingMode: .plain)
+        roundGlucose(Decimal(self) * GlucoseUnits.exchangeRate, scale: 1, roundingMode: .plain)
     }
 
     var asMgdL: Decimal {
-        decimalRound(Decimal(self) / GlucoseUnits.exchangeRate, scale: 0, roundingMode: .plain)
+        roundGlucose(Decimal(self) / GlucoseUnits.exchangeRate, scale: 0, roundingMode: .plain)
     }
 
     var formattedAsMmolL: String {
@@ -270,3 +285,36 @@ extension NumberFormatter {
     }()
 }
 
+/// Spells out compact unit abbreviations for VoiceOver so screen readers don't voice
+/// "mg/dL" as letters or "U" as "you". Compound units (e.g. "mg/dL/U", "g/U", "U/hr")
+/// are split on "/" and joined with "per", so each token only needs a single mapping.
+enum UnitSpelling {
+    private static let tokens: [String: String] = [
+        "mg": String(localized: "milligrams", comment: "Accessibility: spoken unit"),
+        "dL": String(localized: "deciliter", comment: "Accessibility: spoken unit"),
+        "mmol": String(localized: "millimoles", comment: "Accessibility: spoken unit"),
+        "L": String(localized: "liter", comment: "Accessibility: spoken unit"),
+        "U": String(localized: "units", comment: "Accessibility: spoken unit"),
+        "g": String(localized: "grams", comment: "Accessibility: spoken unit"),
+        "hr": String(localized: "hour", comment: "Accessibility: spoken unit"),
+        "min": String(localized: "minutes", comment: "Accessibility: spoken unit"),
+        "%": String(localized: "percent", comment: "Accessibility: spoken unit")
+    ]
+
+    /// Returns a spoken form of a unit string, e.g. "mg/dL/U" -> "milligrams per deciliter per units".
+    /// Unknown tokens pass through unchanged.
+    static func spoken(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return "" }
+        let separator = " " + String(localized: "per", comment: "Accessibility: unit separator, as in grams per unit") + " "
+        return trimmed
+            .split(separator: "/", omittingEmptySubsequences: true)
+            .map { tokens[String($0)] ?? String($0) }
+            .joined(separator: separator)
+    }
+}
+
+extension GlucoseUnits {
+    /// Spoken glucose unit for VoiceOver ("milligrams per deciliter" / "millimoles per liter").
+    var spokenValue: String { UnitSpelling.spoken(rawValue) }
+}

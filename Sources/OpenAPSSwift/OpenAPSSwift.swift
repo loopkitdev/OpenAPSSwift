@@ -1,324 +1,415 @@
 import Foundation
 
+/// JSON-in / JSON-out façade over Trio's oref generators, for hosts that are not the Trio app.
+///
+/// Trio 1.0 calls the generators with native models from `Trio/Sources/APS/OpenAPS/OpenAPS.swift`
+/// and does some algorithm-relevant work there, outside the generators. The façade reproduces
+/// that work so a determination here is the one Trio would make on the same inputs:
+///
+/// - profile: an active temp target's effective half-basal target replaces
+///   `halfBasalExerciseTarget` (`TempTargetCalculations.computeEffectiveHBT`), and
+///   `lowTemptargetLowersSensitivity` is cleared when `autosensMax <= 1` (`createProfiles`);
+/// - profile: the pump's supported basal rates are injected (`profile.supportedBasalRates`);
+/// - IOB: duplicate suspend/resume events are removed first (`iob(pumphistory:…)`);
+/// - autosens: the lower of the 8 h and 24 h ratios (`autosense(glucose:…)`);
+/// - determination: dynamic ISF is switched off when Trio would lack the TDD history for it
+///   (`hasSufficientTdd`, ≥75% of 7 days of 5-minute TDD records).
+///
+/// Dosing mode is closed loop (`Preferences.clamped(for: .closed)` is the identity).
 public struct OpenAPSSwift {
     public static func makeProfile(
-        preferences: JSON,
-        pumpSettings: JSON,
-        bgTargets: JSON,
-        basalProfile: JSON,
-        isf: JSON,
-        carbRatio: JSON,
-        tempTargets: JSON,
-        model: JSON,
-        trioSettings: JSON,
-        clock: Date
-    ) -> (OrefFunctionResult) {
+        preferences: String,
+        pumpSettings: String,
+        bgTargets: String,
+        basalProfile: String,
+        isf: String,
+        carbRatio: String,
+        tempTargets: String,
+        model: String,
+        trioSettings: String,
+        clock: Date,
+        supportedBasalRates: [Decimal] = []
+    ) -> OrefFunctionResult {
+        _ = (model, trioSettings) // accepted for signature parity; Trio 1.0's ProfileGenerator takes neither
         do {
-            let preferences = try JSONBridge.preferences(from: preferences)
-            let pumpSettings = try JSONBridge.pumpSettings(from: pumpSettings)
-            let bgTargets = try JSONBridge.bgTargets(from: bgTargets)
-            let basalProfile = try JSONBridge.basalProfile(from: basalProfile)
-            let isf = try JSONBridge.insulinSensitivities(from: isf)
-            let carbRatio = try JSONBridge.carbRatios(from: carbRatio)
-            let tempTargets = try JSONBridge.tempTargets(from: tempTargets)
-            let model = JSONBridge.model(from: model)
-            let trioSettings = try JSONBridge.trioSettings(from: trioSettings)
-
-            let profile = try ProfileGenerator.generate(
-                pumpSettings: pumpSettings,
-                bgTargets: bgTargets,
-                basalProfile: basalProfile,
-                isf: isf,
-                preferences: preferences,
-                carbRatios: carbRatio,
-                tempTargets: tempTargets,
-                model: model,
-                clock: clock
+            let profile = try generateProfile(
+                preferences: FacadeJSON.preferences(from: preferences),
+                pumpSettings: JSONBridge.pumpSettings(from: pumpSettings),
+                bgTargets: JSONBridge.bgTargets(from: bgTargets),
+                basalProfile: JSONBridge.basalProfile(from: basalProfile),
+                isf: JSONBridge.insulinSensitivities(from: isf),
+                carbRatios: JSONBridge.carbRatios(from: carbRatio),
+                tempTargets: JSONBridge.tempTargets(from: tempTargets),
+                clock: clock,
+                supportedBasalRates: supportedBasalRates
             )
-
-            return (try .success(JSONBridge.to(profile)))
+            return try .success(FacadeJSON.to(profile))
         } catch {
-            return (.failure(error))
+            return .failure(error)
         }
     }
 
     public static func determineBasal(
-        glucose: JSON,
-        currentTemp: JSON,
-        iob: JSON,
-        profile: JSON,
-        autosens: JSON,
-        meal: JSON,
+        glucose: String,
+        currentTemp: String,
+        iob: String,
+        profile: String,
+        autosens: String,
+        meal: String,
         microBolusAllowed: Bool,
-        reservoir: JSON,
-        pumpHistory: JSON,
-        preferences: JSON,
-        basalProfile: JSON,
-        trioCustomOrefVariables: JSON,
-        clock: Date
-    ) -> (OrefFunctionResult) {
+        reservoir: String,
+        pumpHistory: String,
+        preferences: String,
+        basalProfile: String,
+        trioCustomOrefVariables: String,
+        clock: Date,
+        hasSufficientTdd: Bool = true
+    ) -> OrefFunctionResult {
+        _ = (pumpHistory, basalProfile) // Trio 1.0's DeterminationGenerator takes neither
         do {
-            let glucose = try JSONBridge.glucose(from: glucose)
-            let currentTemp = try JSONBridge.currentTemp(from: currentTemp)
-            let iob = try JSONBridge.iobResult(from: iob)
+            let glucose = try FacadeJSON.glucose(from: glucose)
+            let currentTemp = try FacadeJSON.currentTemp(from: currentTemp)
+            let iob = try FacadeJSON.iobResult(from: iob)
             let profile = try JSONBridge.profile(from: profile)
-            let autosens = try JSONBridge.autosens(from: autosens)
-            let meal = try JSONBridge.computedCarbs(from: meal)
-            let microBolusAllowed = microBolusAllowed
-            let reservoir = Decimal(string: reservoir.rawJSON)
-            let pumpHistory = try JSONBridge.pumpHistory(from: pumpHistory)
-            let preferences = try JSONBridge.preferences(from: preferences)
-            let basalProfile = try JSONBridge.basalProfile(from: basalProfile)
-            let trioCustomOrefVariables = try JSONBridge.trioCustomOrefVariables(from: trioCustomOrefVariables)
-
-            guard let mealData = meal, let autosensData = autosens else {
-                return .failure(DeterminationError.missingInputs)
-            }
-
-            let rawDetermination = try DeterminationGenerator.generate(
-                profile: profile,
-                preferences: preferences,
-                currentTemp: currentTemp,
-                iobData: iob,
-                mealData: mealData,
-                autosensData: autosensData,
-                reservoirData: reservoir ?? 100,
-                glucose: glucose,
-                microBolusAllowed: microBolusAllowed,
-                trioCustomOrefVariables: trioCustomOrefVariables,
-                currentTime: clock
+            guard let autosens = try JSONBridge.autosens(from: autosens),
+                  let meal = try FacadeJSON.computedCarbs(from: meal)
+            else { throw DeterminationError.missingInputs }
+            let reservoir = Decimal(string: reservoir) ?? 100
+            let preferences = try FacadeJSON.preferences(from: preferences)
+            let trioCustom = try JSONBridge.trioCustomOrefVariables(from: trioCustomOrefVariables)
+            return try determine(
+                glucose: glucose, currentTemp: currentTemp, iob: iob, profile: profile, autosens: autosens,
+                meal: meal, microBolusAllowed: microBolusAllowed, reservoir: reservoir, preferences: preferences,
+                trioCustom: trioCustom, clock: clock, hasSufficientTdd: hasSufficientTdd
             )
-
-            return try .success(JSONBridge.to(rawDetermination))
-
-        } catch let determinationError as DeterminationError {
-            // if we get a determination error we want to return it as a JSON
-            // object that is { "error": "some error" }
-            do {
-                let response = try JSONBridge.to(DeterminationErrorResponse(error: determinationError.localizedDescription))
-                return .success(response)
-            } catch {
-                return .failure(determinationError)
-            }
         } catch {
             return .failure(error)
         }
     }
 
     public static func meal(
-        pumphistory: JSON,
-        profile: JSON,
-        basalProfile: JSON,
-        clock: JSON,
-        carbs: JSON,
-        glucose: JSON
-    ) -> (OrefFunctionResult) {
+        pumphistory: String,
+        profile: String,
+        basalProfile: String,
+        clock: String,
+        carbs: String,
+        glucose: String
+    ) -> OrefFunctionResult {
         do {
-            let pumpHistory = try JSONBridge.pumpHistory(from: pumphistory)
-            let profile = try JSONBridge.profile(from: profile)
-            let basalProfile = try JSONBridge.basalProfile(from: basalProfile)
-            let clock = try JSONBridge.clock(from: clock)
-            let carbs = try JSONBridge.carbs(from: carbs)
-            let glucose = try JSONBridge.glucose(from: glucose)
-
             let mealResult = try MealGenerator.generate(
-                pumpHistory: pumpHistory,
-                profile: profile,
-                basalProfile: basalProfile,
-                clock: clock,
-                carbHistory: carbs,
-                glucoseHistory: glucose
+                pumpHistory: FacadeJSON.pumpHistory(from: pumphistory),
+                profile: JSONBridge.profile(from: profile),
+                basalProfile: JSONBridge.basalProfile(from: basalProfile),
+                clock: FacadeJSON.clock(from: clock),
+                carbHistory: FacadeJSON.carbs(from: carbs),
+                glucoseHistory: FacadeJSON.glucose(from: glucose)
             )
-
-            return try .success(JSONBridge.to(mealResult))
+            return try .success(FacadeJSON.to(mealResult))
         } catch {
             return .failure(error)
         }
     }
 
-    public static func iob(pumphistory: JSON, profile: JSON, clock: JSON, autosens: JSON) -> (OrefFunctionResult) {
+    public static func iob(pumphistory: String, profile: String, clock: String, autosens: String) -> OrefFunctionResult {
         do {
-            let pumpHistory = try JSONBridge.pumpHistory(from: pumphistory)
-            let profile = try JSONBridge.profile(from: profile)
-            let clock = try JSONBridge.clock(from: clock)
-            let autosens = try JSONBridge.autosens(from: autosens)
-
             let iobResult = try IobGenerator.generate(
-                history: pumpHistory,
-                profile: profile,
-                clock: clock,
-                autosens: autosens
+                history: FacadeJSON.pumpHistory(from: pumphistory).removingDuplicateSuspendResumeEvents(),
+                profile: JSONBridge.profile(from: profile),
+                clock: FacadeJSON.clock(from: clock),
+                autosens: JSONBridge.autosens(from: autosens)
             )
-
-            return try .success(JSONBridge.to(iobResult))
+            return try .success(FacadeJSON.to(iobResult))
         } catch {
             return .failure(error)
         }
     }
 
     public static func autosense(
-        glucose: JSON,
-        pumpHistory: JSON,
-        basalProfile: JSON,
-        profile: JSON,
-        carbs: JSON,
-        tempTargets: JSON,
-        clock: JSON,
-        includeDeviationsForTesting: Bool = false
-    ) -> (OrefFunctionResult) {
+        glucose: String,
+        pumpHistory: String,
+        basalProfile: String,
+        profile: String,
+        carbs: String,
+        tempTargets: String,
+        clock: String
+    ) -> OrefFunctionResult {
         do {
-            let glucose = try JSONBridge.glucose(from: glucose)
-            let pumpHistory = try JSONBridge.pumpHistory(from: pumpHistory)
-            let basalProfile = try JSONBridge.basalProfile(from: basalProfile)
-            let profile = try JSONBridge.profile(from: profile)
-            let carbs = try JSONBridge.carbs(from: carbs)
-            let tempTargets = try JSONBridge.tempTargets(from: tempTargets)
-            let clock = try JSONBridge.clock(from: clock)
-
-            // this logic is from prepare/autosens.js
-            let ratio8h = try AutosensGenerator.generate(
-                glucose: glucose,
-                pumpHistory: pumpHistory,
-                basalProfile: basalProfile,
-                profile: profile,
-                carbs: carbs,
-                tempTargets: tempTargets,
-                maxDeviations: 96,
-                clock: clock,
-                includeDeviationsForTesting: includeDeviationsForTesting
+            let autosens = try autosense(
+                glucose: FacadeJSON.glucose(from: glucose),
+                pumpHistory: FacadeJSON.pumpHistory(from: pumpHistory),
+                basalProfile: JSONBridge.basalProfile(from: basalProfile),
+                profile: JSONBridge.profile(from: profile),
+                carbs: FacadeJSON.carbs(from: carbs),
+                tempTargets: JSONBridge.tempTargets(from: tempTargets),
+                clock: FacadeJSON.clock(from: clock)
             )
-
-            let ratio24h = try AutosensGenerator.generate(
-                glucose: glucose,
-                pumpHistory: pumpHistory,
-                basalProfile: basalProfile,
-                profile: profile,
-                carbs: carbs,
-                tempTargets: tempTargets,
-                maxDeviations: 288,
-                clock: clock,
-                includeDeviationsForTesting: includeDeviationsForTesting
-            )
-
-            let lowestRatio = ratio8h.ratio < ratio24h.ratio ? ratio8h : ratio24h
-
-            return try .success(JSONBridge.to(lowestRatio))
+            return try .success(FacadeJSON.to(autosens))
         } catch {
             return .failure(error)
         }
     }
 
-    /// Combined pipeline: profile → meal → autosens → iob → determineBasal, parsing
-    /// each raw input ONCE and passing the SAME parsed structs between generators
-    /// (no intermediate JSON serialize/reparse). Mathematically identical to calling
-    /// makeProfile/meal/autosense/iob/determineBasal in sequence — same generators,
-    /// same order — but avoids re-parsing profile/pumpHistory/glucose 3–4× per step.
-    /// Returns the determination JSON (or the {"error":…} JSON, matching determineBasal)
-    /// plus the autosens ratio (for diagnostics). Throws on any non-determination error,
-    /// matching the per-call `.returnOrThrow()` behavior of the separate functions.
+    /// Combined pipeline: profile → meal → autosens → iob → determineBasal, parsing each raw input
+    /// once and passing the parsed models between generators. Same generators, same order and same
+    /// app-layer steps as the separate calls. Returns the determination JSON (or the {"error":…}
+    /// JSON, matching determineBasal) plus the autosens ratio. Throws on any non-determination error.
     public static func runPipeline(
-        preferences: JSON,
-        pumpSettings: JSON,
-        bgTargets: JSON,
-        basalProfile: JSON,
-        isf: JSON,
-        carbRatio: JSON,
-        model: JSON,
-        trioSettings: JSON,
-        pumpHistory: JSON,
-        carbs: JSON,
-        glucose: JSON,
-        currentTemp: JSON,
-        reservoir: JSON,
+        preferences: String,
+        pumpSettings: String,
+        bgTargets: String,
+        basalProfile: String,
+        isf: String,
+        carbRatio: String,
+        model: String,
+        trioSettings: String,
+        pumpHistory: String,
+        carbs: String,
+        glucose: String,
+        currentTemp: String,
+        reservoir: String,
         microBolusAllowed: Bool,
-        trioCustomOrefVariables: JSON,
+        trioCustomOrefVariables: String,
         clockDate: Date,
-        clockJSON: JSON,
-        tempTargets: JSON = "[]"
+        clockJSON: String,
+        tempTargets: String = "[]",
+        supportedBasalRates: [Decimal] = [],
+        hasSufficientTdd: Bool = true
     ) throws -> (determination: String, autosensRatio: Double) {
-        // Match the separate-call clock usage exactly: makeProfile/determineBasal
-        // used the Date (req.t); meal/autosens/iob used the parsed clock-string.
-        let clockParsed = try JSONBridge.clock(from: clockJSON)
-        // ── parse every raw input exactly once ──
-        let prefs       = try JSONBridge.preferences(from: preferences)
-        let pumpSet     = try JSONBridge.pumpSettings(from: pumpSettings)
-        let tgts        = try JSONBridge.bgTargets(from: bgTargets)
-        let basal       = try JSONBridge.basalProfile(from: basalProfile)
-        let isfP        = try JSONBridge.insulinSensitivities(from: isf)
-        let cr          = try JSONBridge.carbRatios(from: carbRatio)
-        let tt          = try JSONBridge.tempTargets(from: tempTargets)
-        let mdl         = JSONBridge.model(from: model)
-        let ph          = try JSONBridge.pumpHistory(from: pumpHistory)
-        let carbsArr    = try JSONBridge.carbs(from: carbs)
-        let glu         = try JSONBridge.glucose(from: glucose)
-        let curTemp     = try JSONBridge.currentTemp(from: currentTemp)
-        let resv        = Decimal(string: reservoir.rawJSON) ?? 100
-        let trioCustom  = try JSONBridge.trioCustomOrefVariables(from: trioCustomOrefVariables)
-        _ = trioSettings  // accepted for signature parity with makeProfile; ProfileGenerator ignores it
+        _ = (model, trioSettings)
+        // Match the separate-call clock usage: makeProfile/determineBasal take the Date,
+        // meal/autosens/iob the parsed clock string.
+        let clockParsed = try FacadeJSON.clock(from: clockJSON)
+        let prefs = try FacadeJSON.preferences(from: preferences)
+        let basal = try JSONBridge.basalProfile(from: basalProfile)
+        let tt = try JSONBridge.tempTargets(from: tempTargets)
+        let ph = try FacadeJSON.pumpHistory(from: pumpHistory)
+        let carbsArr = try FacadeJSON.carbs(from: carbs)
+        let glu = try FacadeJSON.glucose(from: glucose)
+        let curTemp = try FacadeJSON.currentTemp(from: currentTemp)
+        let resv = Decimal(string: reservoir) ?? 100
+        let trioCustom = try JSONBridge.trioCustomOrefVariables(from: trioCustomOrefVariables)
 
-        let profile = try ProfileGenerator.generate(
-            pumpSettings: pumpSet, bgTargets: tgts, basalProfile: basal, isf: isfP,
-            preferences: prefs, carbRatios: cr, tempTargets: tt, model: mdl, clock: clockDate)
+        let profile = try generateProfile(
+            preferences: prefs,
+            pumpSettings: JSONBridge.pumpSettings(from: pumpSettings),
+            bgTargets: JSONBridge.bgTargets(from: bgTargets),
+            basalProfile: basal,
+            isf: JSONBridge.insulinSensitivities(from: isf),
+            carbRatios: JSONBridge.carbRatios(from: carbRatio),
+            tempTargets: tt,
+            clock: clockDate,
+            supportedBasalRates: supportedBasalRates
+        )
 
         let meal = try MealGenerator.generate(
             pumpHistory: ph, profile: profile, basalProfile: basal,
-            clock: clockParsed, carbHistory: carbsArr, glucoseHistory: glu)
-
-        // One simulation, both ratios (8h cap=96, 24h cap=288) — bit-identical to
-        // two separate generate() calls but the expensive per-point loop runs once.
-        let (r8, r24) = try AutosensGenerator.generateBoth(
+            clock: clockParsed, carbHistory: carbsArr, glucoseHistory: glu
+        )
+        let autosens = try autosense(
             glucose: glu, pumpHistory: ph, basalProfile: basal, profile: profile,
-            carbs: carbsArr, tempTargets: tt, capA: 96, capB: 288, clock: clockParsed)
-        let autosens = r8.ratio < r24.ratio ? r8 : r24
+            carbs: carbsArr, tempTargets: tt, clock: clockParsed
+        )
         let ratio = NSDecimalNumber(decimal: autosens.ratio).doubleValue
-
         let iob = try IobGenerator.generate(
-            history: ph, profile: profile, clock: clockParsed, autosens: autosens)
-
+            history: ph.removingDuplicateSuspendResumeEvents(), profile: profile, clock: clockParsed, autosens: autosens
+        )
         guard let mealData = meal else { throw DeterminationError.missingInputs }
 
-        do {
-            let rawDet = try DeterminationGenerator.generate(
-                profile: profile, preferences: prefs, currentTemp: curTemp,
-                iobData: iob, mealData: mealData, autosensData: autosens,
-                reservoirData: resv, glucose: glu, microBolusAllowed: microBolusAllowed,
-                trioCustomOrefVariables: trioCustom, currentTime: clockDate)
-            // GOLDEN-MASTER dump: serialize the determine-basal intermediates (oref0
-            // JSON shape) at a target cycle so Trio's determine-basal.js can be run
-            // on the identical inputs via node and compared. Env-gated, harmless.
-            if let gm = ProcessInfo.processInfo.environment["OREF_GM_TIME"],
-               let target = ISO8601DateFormatter().date(from: gm),
-               abs(clockDate.timeIntervalSince(target)) < 150 {
-                let dir = "/tmp/gm"
-                try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-                func d(_ s: String, _ n: String) { try? s.write(toFile: "\(dir)/\(n).json", atomically: true, encoding: .utf8) }
-                d(try JSONBridge.to(profile), "profile")
-                d(try JSONBridge.to(iob), "iob")
-                d(try JSONBridge.to(mealData), "meal")
-                d(try JSONBridge.to(autosens), "autosens")
-                d(try JSONBridge.to(glu), "glucose")
-                d(try JSONBridge.to(curTemp), "currenttemp")
-                d(preferences.rawJSON, "preferences")
-                d(basalProfile.rawJSON, "basalprofile")
-                d(try JSONBridge.to(trioCustom), "trio_custom")
-                d(try JSONBridge.to(rawDet), "our_determination")
-                d("\"\(ISO8601DateFormatter().string(from: clockDate))\"", "clock")
-                // RAW inputs (for generator golden-master: run Trio profile/meal/
-                // autosens/iob on these and compare to our intermediates above).
-                d(pumpHistory.rawJSON, "raw_pumphistory")
-                d(carbs.rawJSON, "raw_carbs")
-                d(pumpSettings.rawJSON, "raw_pumpsettings")
-                d(bgTargets.rawJSON, "raw_bgtargets")
-                d(isf.rawJSON, "raw_isf")
-                d(carbRatio.rawJSON, "raw_carbratio")
-                d(tempTargets.rawJSON, "raw_temptargets")
-                d(model.rawJSON, "raw_model")
-                FileHandle.standardError.write(Data("GM dumped at \(clockDate)\n".utf8))
-            }
-            return (try JSONBridge.to(rawDet), ratio)
-        } catch let determinationError as DeterminationError {
-            let response = try JSONBridge.to(DeterminationErrorResponse(error: determinationError.localizedDescription))
-            return (response, ratio)
+        let det = try determine(
+            glucose: glu, currentTemp: curTemp, iob: iob, profile: profile, autosens: autosens, meal: mealData,
+            microBolusAllowed: microBolusAllowed, reservoir: resv, preferences: prefs, trioCustom: trioCustom,
+            clock: clockDate, hasSufficientTdd: hasSufficientTdd
+        )
+        // Golden-master dump: the determine-basal inputs (oref0 JSON shape) at one target cycle, so
+        // Trio's own code can be run on identical inputs and compared. Env-gated.
+        if let gm = ProcessInfo.processInfo.environment["OREF_GM_TIME"],
+           let target = ISO8601DateFormatter().date(from: gm),
+           abs(clockDate.timeIntervalSince(target)) < 150
+        {
+            let dir = "/tmp/gm"
+            try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+            func d(_ s: String, _ n: String) { try? s.write(toFile: "\(dir)/\(n).json", atomically: true, encoding: .utf8) }
+            d(try FacadeJSON.to(profile), "profile")
+            d(try FacadeJSON.to(iob), "iob")
+            d(try FacadeJSON.to(mealData), "meal")
+            d(try FacadeJSON.to(autosens), "autosens")
+            d(try FacadeJSON.to(glu), "glucose")
+            d(try FacadeJSON.to(curTemp), "currenttemp")
+            d(preferences, "preferences")
+            d(basalProfile, "basalprofile")
+            d(try FacadeJSON.to(trioCustom), "trio_custom")
+            if case let .success(s) = det { d(s, "our_determination") }
+            d("\"\(ISO8601DateFormatter().string(from: clockDate))\"", "clock")
+            d(pumpHistory, "raw_pumphistory")
+            d(carbs, "raw_carbs")
+            d(pumpSettings, "raw_pumpsettings")
+            d(bgTargets, "raw_bgtargets")
+            d(isf, "raw_isf")
+            d(carbRatio, "raw_carbratio")
+            d(tempTargets, "raw_temptargets")
+            FileHandle.standardError.write(Data("GM dumped at \(clockDate)\n".utf8))
         }
+        return (try det.returnOrThrow(), ratio)
+    }
+
+    // MARK: - Trio 1.0 app-layer steps
+
+    /// `OpenAPS.createProfiles`: temp-target half-basal adjustment and the low-TT guard, then
+    /// `ProfileGenerator`; the pump's rate table is injected as in `OpenAPS.determineBasal`.
+    static func generateProfile(
+        preferences: Preferences,
+        pumpSettings: PumpSettings,
+        bgTargets: BGTargets,
+        basalProfile: [BasalProfileEntry],
+        isf: InsulinSensitivities,
+        carbRatios: CarbRatios,
+        tempTargets: [TempTarget],
+        clock: Date,
+        supportedBasalRates: [Decimal]
+    ) throws -> Profile {
+        var adjusted = preferences
+        if let active = activeTempTarget(tempTargets, at: clock),
+           active.enabled ?? true,
+           let target = active.targetBottom ?? active.targetTop,
+           let hbt = TempTargetCalculations.computeEffectiveHBT(
+               tempTargetHalfBasalTarget: active.halfBasalTarget,
+               settingHalfBasalTarget: preferences.halfBasalExerciseTarget,
+               target: target,
+               autosensMax: preferences.autosensMax
+           ),
+           hbt != preferences.halfBasalExerciseTarget
+        {
+            adjusted.halfBasalExerciseTarget = hbt
+        }
+        if preferences.lowTemptargetLowersSensitivity, preferences.autosensMax <= 1 {
+            adjusted.lowTemptargetLowersSensitivity = false
+        }
+        var profile = try ProfileGenerator.generate(
+            pumpSettings: pumpSettings,
+            bgTargets: bgTargets,
+            basalProfile: basalProfile,
+            isf: isf,
+            preferences: adjusted,
+            carbRatios: carbRatios,
+            tempTargets: tempTargets,
+            clock: clock
+        )
+        profile.supportedBasalRates = supportedBasalRates
+        return profile
+    }
+
+    /// The temp target in effect at `clock`: the latest one started at or before it whose duration
+    /// covers it (a zero-duration target cancels).
+    static func activeTempTarget(_ tempTargets: [TempTarget], at clock: Date) -> TempTarget? {
+        guard let latest = tempTargets.filter({ $0.createdAt <= clock }).max(by: { $0.createdAt < $1.createdAt }),
+              latest.duration > 0,
+              clock < latest.createdAt.addingTimeInterval(TimeInterval(truncating: latest.duration as NSNumber) * 60)
+        else { return nil }
+        return latest
+    }
+
+    /// `OpenAPS.autosense(glucose:…)`: 8 h and 24 h ratios over shared treatments, keep the lower.
+    static func autosense(
+        glucose: [BloodGlucose],
+        pumpHistory: [PumpHistoryEvent],
+        basalProfile: [BasalProfileEntry],
+        profile: Profile,
+        carbs: [CarbsEntry],
+        tempTargets: [TempTarget],
+        clock: Date
+    ) throws -> Autosens {
+        let precomputed = glucose.count >= 72 ? try IobHistory.calcTempTreatments(
+            history: pumpHistory.map { $0.computedEvent() },
+            profile: profile,
+            clock: clock,
+            autosens: nil,
+            zeroTempDuration: nil
+        ) : nil
+        let ratio8h = try AutosensGenerator.generate(
+            glucose: glucose, pumpHistory: pumpHistory, basalProfile: basalProfile, profile: profile,
+            carbs: carbs, tempTargets: tempTargets, maxDeviations: 96, clock: clock,
+            precomputedTreatments: precomputed
+        )
+        let ratio24h = try AutosensGenerator.generate(
+            glucose: glucose, pumpHistory: pumpHistory, basalProfile: basalProfile, profile: profile,
+            carbs: carbs, tempTargets: tempTargets, maxDeviations: 288, clock: clock,
+            precomputedTreatments: precomputed
+        )
+        return ratio8h.ratio < ratio24h.ratio ? ratio8h : ratio24h
+    }
+
+    /// `OpenAPS.determineBasal`: the insufficient-TDD guard on dynamic ISF, then the generator.
+    static func determine(
+        glucose: [BloodGlucose],
+        currentTemp: TempBasal,
+        iob: [IobResult],
+        profile: Profile,
+        autosens: Autosens,
+        meal: ComputedCarbs,
+        microBolusAllowed: Bool,
+        reservoir: Decimal,
+        preferences: Preferences,
+        trioCustom: TrioCustomOrefVariables,
+        clock: Date,
+        hasSufficientTdd: Bool
+    ) throws -> OrefFunctionResult {
+        var preferences = preferences
+        if !hasSufficientTdd, preferences.useNewFormula {
+            preferences.useNewFormula = false
+            preferences.sigmoid = false
+        }
+        do {
+            let det = try DeterminationGenerator.generate(
+                profile: profile, preferences: preferences, currentTemp: currentTemp,
+                iobData: iob, mealData: meal, autosensData: autosens,
+                reservoirData: reservoir, glucose: glucose, microBolusAllowed: microBolusAllowed,
+                trioCustomOrefVariables: trioCustom, currentTime: clock
+            )
+            return try .success(FacadeJSON.to(det))
+        } catch let determinationError as DeterminationError {
+            return try .success(FacadeJSON.to(DeterminationErrorResponse(error: determinationError.localizedDescription)))
+        }
+    }
+}
+
+struct DeterminationErrorResponse: Codable {
+    let error: String
+}
+
+/// Decoders Trio 1.0 dropped from `JSONBridge` when its app went native, kept for the façade.
+enum FacadeJSON {
+    static func preferences(from s: String) throws -> Preferences { try JSONBridge.from(string: s) }
+    static func glucose(from s: String) throws -> [BloodGlucose] { try JSONBridge.from(string: s) }
+    static func currentTemp(from s: String) throws -> TempBasal { try JSONBridge.from(string: s) }
+    static func carbs(from s: String) throws -> [CarbsEntry] { try JSONBridge.from(string: s) }
+    static func iobResult(from s: String) throws -> [IobResult] { try JSONBridge.from(string: s) }
+    static func computedCarbs(from s: String) throws -> ComputedCarbs? { try JSONBridge.from(string: s) }
+
+    /// An empty object "{}" is an empty history.
+    static func pumpHistory(from s: String) throws -> [PumpHistoryEvent] {
+        do {
+            return try JSONBridge.from(string: s)
+        } catch {
+            if let data = s.data(using: .utf8),
+               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any], obj.isEmpty
+            {
+                return []
+            }
+            throw error
+        }
+    }
+
+    static func clock(from s: String) throws -> Date {
+        let str = s.replacingOccurrences(of: "\"", with: "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if let date = Formatter.iso8601withFractionalSeconds.date(from: str) ?? Formatter.iso8601.date(from: str) {
+            return date
+        }
+        throw JSONError.invalidDate(s)
+    }
+
+    static func to<T: Encodable>(_ value: T) throws -> String {
+        let data = try JSONCoding.encoder.encode(value)
+        guard let string = String(data: data, encoding: .utf8) else { throw JSONError.encodingFailed }
+        return string
     }
 }
