@@ -176,15 +176,46 @@ public struct OpenAPSSwift {
         hasSufficientTdd: Bool = true
     ) throws -> (determination: String, autosensRatio: Double) {
         _ = (model, trioSettings)
+        return try runPipeline(
+            preferences: preferences, pumpSettings: pumpSettings, bgTargets: bgTargets,
+            basalProfile: basalProfile, isf: isf, carbRatio: carbRatio,
+            pumpHistory: FacadeJSON.pumpHistory(from: pumpHistory),
+            carbs: FacadeJSON.carbs(from: carbs),
+            glucose: FacadeJSON.glucose(from: glucose),
+            currentTemp: currentTemp, reservoir: reservoir, microBolusAllowed: microBolusAllowed,
+            trioCustomOrefVariables: trioCustomOrefVariables, clockDate: clockDate, clockJSON: clockJSON,
+            tempTargets: tempTargets, supportedBasalRates: supportedBasalRates, hasSufficientTdd: hasSufficientTdd
+        )
+    }
+
+    /// `runPipeline` with glucose, pump history and carbs as models (see `OrefNative` for building
+    /// them to equal the JSON path). The other inputs are small and stay JSON.
+    public static func runPipeline(
+        preferences: String,
+        pumpSettings: String,
+        bgTargets: String,
+        basalProfile: String,
+        isf: String,
+        carbRatio: String,
+        pumpHistory ph: [PumpHistoryEvent],
+        carbs carbsArr: [CarbsEntry],
+        glucose glu: [BloodGlucose],
+        currentTemp: String,
+        reservoir: String,
+        microBolusAllowed: Bool,
+        trioCustomOrefVariables: String,
+        clockDate: Date,
+        clockJSON: String,
+        tempTargets: String = "[]",
+        supportedBasalRates: [Decimal] = [],
+        hasSufficientTdd: Bool = true
+    ) throws -> (determination: String, autosensRatio: Double) {
         // Match the separate-call clock usage: makeProfile/determineBasal take the Date,
         // meal/autosens/iob the parsed clock string.
         let clockParsed = try FacadeJSON.clock(from: clockJSON)
         let prefs = try FacadeJSON.preferences(from: preferences)
         let basal = try JSONBridge.basalProfile(from: basalProfile)
         let tt = try JSONBridge.tempTargets(from: tempTargets)
-        let ph = try FacadeJSON.pumpHistory(from: pumpHistory)
-        let carbsArr = try FacadeJSON.carbs(from: carbs)
-        let glu = try FacadeJSON.glucose(from: glucose)
         let curTemp = try FacadeJSON.currentTemp(from: currentTemp)
         let resv = Decimal(string: reservoir) ?? 100
         let trioCustom = try JSONBridge.trioCustomOrefVariables(from: trioCustomOrefVariables)
@@ -240,8 +271,8 @@ public struct OpenAPSSwift {
             d(try FacadeJSON.to(trioCustom), "trio_custom")
             if case let .success(s) = det { d(s, "our_determination") }
             d("\"\(ISO8601DateFormatter().string(from: clockDate))\"", "clock")
-            d(pumpHistory, "raw_pumphistory")
-            d(carbs, "raw_carbs")
+            d(try FacadeJSON.to(ph), "raw_pumphistory")
+            d(try FacadeJSON.to(carbsArr), "raw_carbs")
             d(pumpSettings, "raw_pumpsettings")
             d(bgTargets, "raw_bgtargets")
             d(isf, "raw_isf")
