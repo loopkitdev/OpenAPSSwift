@@ -1,4 +1,6 @@
+#if canImport(CoreGraphics)
 import CoreGraphics
+#endif
 import Foundation
 
 protocol Occupiable {
@@ -23,7 +25,9 @@ extension String: Occupiable {}
 
 extension Array: Occupiable {}
 extension ArraySlice: Occupiable {}
+#if canImport(CoreGraphics)
 extension CGRect: Occupiable {}
+#endif
 extension Data: Occupiable {}
 extension Dictionary: Occupiable {}
 extension Set: Occupiable {}

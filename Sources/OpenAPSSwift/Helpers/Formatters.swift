@@ -7,12 +7,14 @@ enum Formatters {
         return formater.string(for: number)!
     }
 
+#if !os(Linux)
     static func timeFor(minutes: Int) -> String {
         let formater = DateComponentsFormatter()
         formater.unitsStyle = .abbreviated
         formater.allowedUnits = [.hour, .minute]
         return formater.string(from: TimeInterval(minutes * 60))!
     }
+#endif
 }
 
 extension Formatter {

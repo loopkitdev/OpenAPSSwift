@@ -7,5 +7,9 @@ import Foundation
         init(localized value: String) {
             self = value
         }
+
+        init(localized value: String, comment _: StaticString) {
+            self = value
+        }
     }
 #endif
